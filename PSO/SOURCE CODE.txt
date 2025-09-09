@@ -1,0 +1,87 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Upload your CSV manually using the Files tab, then:
+
+data = pd.read_csv('/your_gaia_dataset.csv')  # <-- update filename here
+data = data[['phot_g_mean_mag', 'bp_rp', 'parallax']].dropna()
+data = data[data['parallax'] > 0]
+
+data['distance'] = 1 / (data['parallax'] / 1000)
+data['M_G'] = data['phot_g_mean_mag'] - 5 * (np.log10(data['distance']) - 1)
+
+def clustering_cost(params, M_G):
+    center_fg, center_bg = params
+    dist_fg = np.abs(M_G - center_fg)
+    dist_bg = np.abs(M_G - center_bg)
+    assign = dist_fg < dist_bg
+    cost = np.sum(dist_fg[assign]) + np.sum(dist_bg[~assign])
+    return cost
+
+class Particle:
+    def __init__(self, dim, bounds):
+        self.position = np.random.uniform(bounds[0], bounds[1], dim)
+        self.velocity = np.random.uniform(-1, 1, dim)
+        self.best_position = np.copy(self.position)
+        self.best_score = float('inf')
+
+    def update_velocity(self, global_best_position, w, c1, c2):
+        r1 = np.random.rand(len(self.position))
+        r2 = np.random.rand(len(self.position))
+        cognitive = c1 * r1 * (self.best_position - self.position)
+        social = c2 * r2 * (global_best_position - self.position)
+        self.velocity = w * self.velocity + cognitive + social
+
+    def update_position(self, bounds):
+        self.position += self.velocity
+        self.position = np.clip(self.position, bounds[0], bounds[1])
+
+def particle_swarm_optimization(func, dim, bounds, M_G, num_particles=30, max_iter=100,
+                                w=0.7, c1=1.5, c2=1.5):
+    particles = [Particle(dim, bounds) for _ in range(num_particles)]
+    global_best_position = np.zeros(dim)
+    global_best_score = float('inf')
+
+    for t in range(max_iter):
+        for particle in particles:
+            score = func(particle.position, M_G)
+            if score < particle.best_score:
+                particle.best_score = score
+                particle.best_position = np.copy(particle.position)
+
+            if score < global_best_score:
+                global_best_score = score
+                global_best_position = np.copy(particle.position)
+
+        for particle in particles:
+            particle.update_velocity(global_best_position, w, c1, c2)
+            particle.update_position(bounds)
+
+        if (t+1) % 10 == 0 or t == 0:
+            print(f"Iteration {t+1}/{max_iter}, Best Cost: {global_best_score:.6f}")
+
+    return global_best_position, global_best_score
+
+bounds = [data['M_G'].min(), data['M_G'].max()]
+best_centers, best_score = particle_swarm_optimization(clustering_cost, dim=2, bounds=bounds, M_G=data['M_G'])
+
+print("\nOptimized cluster centers:")
+print(f"Foreground center: {best_centers[0]:.3f}")
+print(f"Background center: {best_centers[1]:.3f}")
+
+M_G = data['M_G'].values
+foreground_mask = np.abs(M_G - best_centers[0]) < np.abs(M_G - best_centers[1])
+background_mask = ~foreground_mask
+
+plt.figure(figsize=(10,6))
+plt.hist(M_G[foreground_mask], bins=30, alpha=0.7, label='Foreground Stars')
+plt.hist(M_G[background_mask], bins=30, alpha=0.7, label='Background Stars')
+plt.axvline(best_centers[0], color='blue', linestyle='--', label='Foreground Center')
+plt.axvline(best_centers[1], color='orange', linestyle='--', label='Background Center')
+plt.xlabel('Absolute Magnitude (M_G)')
+plt.ylabel('Star Count')
+plt.title('Foreground vs Background Star Separation using PSO')
+plt.legend()
+plt.gca().invert_xaxis()
+plt.show()
